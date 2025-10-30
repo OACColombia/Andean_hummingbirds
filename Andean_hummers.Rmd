@@ -345,6 +345,7 @@ form_list = list(
 ```
 
 To include the phylogenetic correlations, we are going to test three evolutionary models in this section: 
+
 ### Pagel's lambda optimization 
 
 If $\lambda = 1$, there is phylogenetic signal under Brownian motion or "random walk", where the amount of evolutionary change is proportional to the time elapsed. On the other hand, if $\lambda = 0$, the covariance between all species become zero, removing any phylogenetic signal from the traits (species traits evolve independent). Values in between may indicate in between phylogenetic signal, not purely independent but not purely Brownian; closely related species may more similar than expected by chance, but less similar than a pure Brownian motion model would predict.
