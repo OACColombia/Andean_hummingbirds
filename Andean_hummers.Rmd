@@ -43,12 +43,10 @@ library(ggtree) #plot pretty phylogenetic trees; see https://bioconductor.org/pa
 
 # Morphology
 
-We saved the data, so you should load it:
-```{r}
-load("data_raw/Andean.RData")
-```
+The data formatting steps can be skipped, and a final version of the formatted data can be read in at the start of the section "Phylogenetic Generalized Least-Squares (PGLS) in Morphology". 
 
 Here is the code, but it won't run `eval = FALSE`
+
 ```{r eval=FALSE}
 cladosbc = read_csv('data_raw/morphology.csv') |>
   filter(Especie != "Heliomaster longirostris") |>
@@ -208,6 +206,7 @@ cladosbc$tail_imputed[is.na(cladosbc$tail)] <- tail_means[is.na(cladosbc$tail)]
 cladosbc$bodymass_imputed <- cladosbc$bodymass
 cladosbc$bodymass_imputed[is.na(cladosbc$bodymass)] <- bodymass_means[is.na(cladosbc$bodymass)]
 
+saveRDS(cladosbc, 'data_raw/cladosbc.rda')
 ```
 
 ### How this imputation looks like?
@@ -228,6 +227,7 @@ ggsave(filename = "figures/bm_pre_impute.jpg", body_mass_pre, dpi = 300,
 ![Figure of the values with NA - previous to imputation](figures/bm_pre_impute.jpg)
 
 Body mass for the different species post-imputation:
+
 ```{r eval = FALSE}
 body_mass_post <-cladosbc |>
   ggplot(aes(x = elevation, y = bodymass, color = Species))+
@@ -281,6 +281,7 @@ Here, we compute the correlation matrix using `ape`.
 ```{r eval = FALSE}
 # Create correlation matrix for analysis
 phylo_tree_cor = ape::vcv(tree_spp, cor = T)
+saveRDS(phylo_tree_cor, 'data_raw/phylo_tree_cor.rda')
 ```
 
 Finally, we will plot the tree using blue for coquettes and orange for brilliants
@@ -311,6 +312,14 @@ a
 ```
 
 ## Phylogenetic Generalized Least-Squares (PGLS) in Morphology
+
+Import previously formatted data:
+
+```{r}
+cladosbc = readRDS('data_raw/cladosbc.rda')
+phylo_tree_cor = readRDS('data_raw/phylo_tree_cor.rda')
+```
+
 Lets try the longer format suggested by Simon, adjusting the correlation for phylogenetic relationship
 
 ```{r eval = FALSE}
@@ -366,12 +375,38 @@ for (n in 1:length(form_list)){
   #...and print out which iteration was just completed
   print(paste('model number: ', n, ' - fit - ', formula_n))
 }
+
+names(mod_list_lambda) = form_list
 ```
 
-Check the fitted models (assembled into a list)
+Refitting the same models, but with modified formula for the Pagel correlation structure, in which phylogenetic correlation applies within traits but not between them:
+
+```{r eval=FALSE}
+mod_list_lambda_2 = list() # Empty list to save results
+
+# Now iterate through each formula in the form_list...
+for (n in 1:length(form_list)){
+  # ... paste in the name of the response variable...
+  formula_n = formula(paste(resp_var, form_list[n])) 
+  #...fit the model, and save it in the mod_list...
+  mod_list_lambda_2[[n]] = gls(formula_n, data = cladosbc_long, 
+                      correlation = corPagel(1, phy = tree_spp, 
+                                            form = ~ Species|trait), 
+                      method = 'ML',
+                      na.action = na.omit)
+  #...and print out which iteration was just completed
+  print(paste('model number: ', n, ' - fit - ', formula_n))
+}
+
+names(mod_list_lambda_2) = form_list
+```
+
+Check the fitted models (assembled into a list). Note the better fit of all models with phylogenetic correlations within, but not across, traits:
+
 ```{r}
 # Now the fitted models (already assembled into a list) can be compared with AICc
 aictab(mod_list_lambda) #  ~ trait/elevationScaled*Clado        #mod9
+aictab(mod_list_lambda_2) #  ~ trait/elevationScaled*sex        #mod10
 ```
 
 ### Ornstein-Uhlenbeck (OU)
@@ -394,13 +429,57 @@ for (n in 1:length(form_list)){
   #...and print out which iteration was just completed
   print(paste(resp_var, 'model number', n, 'fit'))
 }
+names(mod_list_OU) = form_list
+```
+
+Refitting the same models, but with modified formula for the correlation structure, in which phylogenetic correlation applies within traits but not between them. Note that due to non-convergence for some models, we need an error handler so that the loop isn't interupted. 
+
+```{r}
+# Define function for checking/handling errors:
+tryCatch.W.E = function(expr){
+    W <- NULL
+    w.handler <- function(w) { # warning handler
+	W <<- w
+	invokeRestart("muffleWarning")
+    }
+    list(value = withCallingHandlers(tryCatch(expr, error = function(e) e),
+				     warning = w.handler),
+	 warning = W)
+}
+```
+
+
+```{r eval=FALSE}
+mod_list_OU_2 = list() # Empty list to save results
+
+# Now iterate through each formula in the form_list...
+for (n in 1:length(form_list)){
+  # ... paste in the name of the response variable...
+  formula_n = formula(paste(resp_var, form_list[n])) 
+  #...fit the model, and save it in the mod_list...
+  mod_list_OU_2[[n]] = tryCatch.W.E({gls(formula_n, data = cladosbc_long, 
+                      correlation = corMartins(1, phy = tree_spp, 
+                                            form = ~ Species|trait), 
+                      method = 'ML',
+                      na.action = na.omit)})
+  #...and print out which iteration was just completed
+  print(paste(resp_var, 'model number', n, 'fit'))
+}
+names(mod_list_OU_2) = form_list
+
+mod_list_OU_2 = sapply(mod_list_OU_2, \(x){x$value})
+mod_list_OU_2 = mod_list_OU_2[sapply(mod_list_OU_2, \(x) {!('error' %in% class(x))})]
 ```
 
 Check the fitted models (assembled into a list)
+
 ```{r}
 # Now the fitted models (already assembled into a list) can be compared with AICc
-aictab(mod_list_OU) #  ~ trait/elevationScaled*Clado        # again mod9!!
+aictab(mod_list_OU)   #  ~ trait/elevationScaled*Clado        # again mod9!!
+aictab(mod_list_OU_2) # 
 ```
+
+**Simon left off here: None of the results/conclusions presented or discussed below has been reviewed or revised since the introduction of the alternative models**
 
 ### Results of morphology PGLS
 
