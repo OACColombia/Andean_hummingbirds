@@ -94,6 +94,8 @@ cladosbc = cladosbc |>
 
 This is not a problem because the data is already loaded
 ```{r eval = TRUE}
+load("data_raw/Andean.RData")
+
 summary(cladosbc)
 ```
 
@@ -369,7 +371,7 @@ for (n in 1:length(form_list)){
   #...fit the model, and save it in the mod_list...
   mod_list_lambda[[n]] = gls(formula_n, data = cladosbc_long, 
                       correlation = corPagel(1, phy = tree_spp, 
-                                            form = ~ Species), 
+                                            form = ~ Species|trait), 
                       method = 'ML',
                       na.action = na.omit)
   #...and print out which iteration was just completed
@@ -423,7 +425,7 @@ for (n in 1:length(form_list)){
   #...fit the model, and save it in the mod_list...
   mod_list_OU[[n]] = gls(formula_n, data = cladosbc_long, 
                       correlation = corMartins(1, phy = tree_spp, 
-                                            form = ~ Species), 
+                                            form = ~ Species|trait), 
                       method = 'ML',
                       na.action = na.omit)
   #...and print out which iteration was just completed
@@ -490,7 +492,7 @@ Value_{Trait} \sim \frac{Trait}{Elevation*Clade}
 $$
 
 ```{r}
-pgls_lambda <- mod_list_lambda[[9]]
+pgls_lambda <- mod_list_lambda$`~trait/elevationScaled * sex`
 pgls_OU <- mod_list_OU[[9]]
 
 # add model prediction
@@ -519,14 +521,14 @@ rng = range(cladosbc$elevationScaled)
 Lambda
 ```{r}
 # Generate predictions with emmeans (the Estimated Marginal Means!!)
-lambda_emm = emmeans(pgls_lambda, ~ trait:elevationScaled:Clado, 
+lambda_emm = emmeans(pgls_lambda, ~ trait:elevationScaled:sex, 
                  at = list(elevationScaled = seq(rng[1], rng[2], .1)), 
                  mode = 'df.error') |> 
   as.data.frame() |> 
   mutate(elevation = scl*elevationScaled + cnt)
 
 lambda_emm |>
-  group_by(trait, Clado) |>
+  group_by(trait, sex) |>
   summarise(L.lower.CL = min(lower.CL),
             emmeanMin = min(emmean),
             U.lower.CL = max(lower.CL),
@@ -541,7 +543,7 @@ lambda_emm |>
                            trait == "bm_imp" ~ "Body mass (gr x 10)",
                            trait == "tail_imputed" ~ "Tail length (mm)",
                            trait == "wing" ~ "Wing length (mm)")) |>
-  ggplot(aes(x = elevation, color = Clado, fill = Clado))+
+  ggplot(aes(x = elevation, color = sex, fill = sex))+
   facet_wrap(~ trait, nrow = 1, scales = 'free') +
   geom_ribbon(aes(ymin = lower.CL, ymax = upper.CL), color = NA, alpha = .2) +
   geom_line(aes(y = emmean))+
@@ -556,8 +558,8 @@ lambda_emm |>
   scale_fill_met_d("Renoir")+
   labs(x = "Elevation (m)",
        y = "Value (mm or gr*10)",
-       color = "Clade",
-       fill = "Clade",
+       color = "Sex",
+       fill = "Sex",
        title = "PGLS - Lambda") +
   theme_classic() +
   theme(legend.position = "bottom", 
