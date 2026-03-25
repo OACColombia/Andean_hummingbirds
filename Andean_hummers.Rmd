@@ -128,7 +128,12 @@ Impute.model <- function(){
                   beta2_body[interaction_index[i]] + 
                   beta3_body * wing[i] + 
                   beta4_body * beak[i]
+  
+  # for posterior predictive check
+  tail_rep[i] ~ dnorm(mu_tail[i], tau_tail)
+  bodymass_rep[i] ~ dnorm(mu_body[i], tau_body)
   }
+ 
   
   # Priors for tail
   beta0_tail ~ dnorm(0, 0.001)
@@ -186,21 +191,57 @@ Fit the model
 
 ```{r eval = FALSE}
 Impute.fit <- jags.fit(data = dat,
-                       params = c("tail","bodymass"),
-                       model = Impute.model)
+                       params = c("tail","bodymass", 'tail_rep', 'bodymass_rep'),
+                       model = Impute.model, n.chains = 4, thin = 5, n.iter = 10000)
+```
+
+The model looks reasonable, but we should check carefully before proceeding with the imputed values. We can use a posterior predictive check to see if the posterior distribution reasonably matches the observed values (shown in red). We can see that the model for the bodymass appears quite good. The model for tail length is failing pretty badly in a small number of cases, but it is also true only 4 tail values need imputing, so it's not too worrying.  
+
+```{r}
+post <- apply(mcmc_mat, 2, quantile, c(0.5, 0.005, 0.10, 0.9, 0.995))
+tail_post = post[, grep("tail_rep", colnames(post))] |> 
+  t() |> 
+  as.data.frame() |> 
+  mutate(Obs = row_number(), .before = `50%`) 
+
+ggplot(tail_post, aes(x = Obs)) + 
+  geom_errorbar(aes(ymin = `0.5%`, ymax = `99.5%`), linewidth = 2, 
+                color = 'grey80')+
+  geom_errorbar(aes(ymin = `10%`, ymax = `90%`), linewidth = 2, 
+                color = 'grey40') +
+geom_point(aes(y = `50%`), color = 'yellow')+
+geom_point(aes(y = tail), data = mutate(cladosbc, Obs = row_number()), 
+             color = 'firebrick2')
+```
+
+```{r}
+bodymass_post = post[, grep("bodymass_rep", colnames(post))] |> 
+  t() |> 
+  as.data.frame() |> 
+  mutate(Obs = row_number(), .before = `50%`)
+
+ggplot(bodymass_post, aes(x = Obs)) + 
+  geom_errorbar(aes(ymin = `0.5%`, ymax = `99.5%`), linewidth = 2, 
+                color = 'grey80')+
+  geom_errorbar(aes(ymin = `10%`, ymax = `90%`), linewidth = 2, 
+                color = 'grey40') +
+geom_point(aes(y = `50%`), color = 'yellow')+
+geom_point(aes(y = bodymass), data = mutate(cladosbc, Obs = row_number()), 
+             color = 'firebrick2')
 ```
 
 Extract posterior means and add to original data to see the missing values
 
 ```{r eval = FALSE}
-
 # Convert to matrix
 mcmc_mat <- as.matrix(Impute.fit)
 
 # Extract posterior means
 tail_means <- colMeans(mcmc_mat[, grep("^tail\\[", colnames(mcmc_mat))])
 bodymass_means <- colMeans(mcmc_mat[, grep("^bodymass\\[", colnames(mcmc_mat))])
+```
 
+```{r}
 # Add new columns with imputed values
 cladosbc$tail_imputed <- cladosbc$tail
 cladosbc$tail_imputed[is.na(cladosbc$tail)] <- tail_means[is.na(cladosbc$tail)]
@@ -343,13 +384,10 @@ resp_var = 'value'  # define response variable
 form_list = list(
   ~ trait/1,                             #mod1 - "null"
   ~ trait/elevationScaled,               #mod2 - Elevation (num)
-  ~ trait/Clado,                         #mod3 - Clade (brilliants vs coquettes)
   ~ trait/sex,                           #mod4 - Sex (female vs male)
   ~ trait/Habitat,                       #mod5 - Habitat (grassland vs shrubland vs forest)
-  ~ trait/elevationScaled + Clado,       #mod6
   ~ trait/elevationScaled + sex,         #mod7
   ~ trait/elevationScaled + Habitat,     #mod8
-  ~ trait/elevationScaled*Clado,         #mod9
   ~ trait/elevationScaled*sex,           #mod10
   ~ trait/elevationScaled*Habitat        #mod11
 )
@@ -359,7 +397,7 @@ To include the phylogenetic correlations, we are going to test three evolutionar
 
 ### Pagel's lambda optimization 
 
-If $\lambda = 1$, there is phylogenetic signal under Brownian motion or "random walk", where the amount of evolutionary change is proportional to the time elapsed. On the other hand, if $\lambda = 0$, the covariance between all species become zero, removing any phylogenetic signal from the traits (species traits evolve independent). Values in between may indicate in between phylogenetic signal, not purely independent but not purely Brownian; closely related species may more similar than expected by chance, but less similar than a pure Brownian motion model would predict.
+If $\lambda = 1$, there is phylogenetic signal under Brownian motion or "random walk", where the amount of evolutionary change is proportional to the time elapsed. On the other hand, if $\lambda = 0$, the covariance between all species become zero, removing any phylogenetic signal from the traits (species traits evolve independent). Values in between may indicate in between phylogenetic signal, not purely independent but not purely Brownian; closely related species may more similar than expected by chance, but less similar than a pure Brownian motion model would predict. Note that the phylogenetic correlation is specified such that it applies within traits but not between them:
 
 ```{r eval=FALSE}
 mod_list_lambda = list() # Empty list to save results
@@ -375,66 +413,22 @@ for (n in 1:length(form_list)){
                       method = 'ML',
                       na.action = na.omit)
   #...and print out which iteration was just completed
-  print(paste('model number: ', n, ' - fit - ', formula_n))
+  print(paste('model number: ', n, ' - fit - ', deparse(formula_n[[3]])))
 }
 
 names(mod_list_lambda) = form_list
-```
-
-Refitting the same models, but with modified formula for the Pagel correlation structure, in which phylogenetic correlation applies within traits but not between them:
-
-```{r eval=FALSE}
-mod_list_lambda_2 = list() # Empty list to save results
-
-# Now iterate through each formula in the form_list...
-for (n in 1:length(form_list)){
-  # ... paste in the name of the response variable...
-  formula_n = formula(paste(resp_var, form_list[n])) 
-  #...fit the model, and save it in the mod_list...
-  mod_list_lambda_2[[n]] = gls(formula_n, data = cladosbc_long, 
-                      correlation = corPagel(1, phy = tree_spp, 
-                                            form = ~ Species|trait), 
-                      method = 'ML',
-                      na.action = na.omit)
-  #...and print out which iteration was just completed
-  print(paste('model number: ', n, ' - fit - ', formula_n))
-}
-
-names(mod_list_lambda_2) = form_list
 ```
 
 Check the fitted models (assembled into a list). Note the better fit of all models with phylogenetic correlations within, but not across, traits:
 
 ```{r}
 # Now the fitted models (already assembled into a list) can be compared with AICc
-aictab(mod_list_lambda) #  ~ trait/elevationScaled*Clado        #mod9
-aictab(mod_list_lambda_2) #  ~ trait/elevationScaled*sex        #mod10
+aictab(mod_list_lambda) #  ~ trait/elevationScaled*sex        #mod9
 ```
 
 ### Ornstein-Uhlenbeck (OU)
 
-Models evolution toward an optimal value, useful when selection is suspected.
-
-```{r eval=FALSE}
-mod_list_OU = list() # Empty list to save results
-
-# Now iterate through each formula in the form_list...
-for (n in 1:length(form_list)){
-  # ... paste in the name of the response variable...
-  formula_n = formula(paste(resp_var, form_list[n])) 
-  #...fit the model, and save it in the mod_list...
-  mod_list_OU[[n]] = gls(formula_n, data = cladosbc_long, 
-                      correlation = corMartins(1, phy = tree_spp, 
-                                            form = ~ Species|trait), 
-                      method = 'ML',
-                      na.action = na.omit)
-  #...and print out which iteration was just completed
-  print(paste(resp_var, 'model number', n, 'fit'))
-}
-names(mod_list_OU) = form_list
-```
-
-Refitting the same models, but with modified formula for the correlation structure, in which phylogenetic correlation applies within traits but not between them. Note that due to non-convergence for some models, we need an error handler so that the loop isn't interupted. 
+Models evolution toward an optimal value, useful when selection is suspected. Note that due to non-convergence for some models, we need an error handler so that the loop isn't interupted. 
 
 ```{r}
 # Define function for checking/handling errors:
@@ -452,36 +446,33 @@ tryCatch.W.E = function(expr){
 
 
 ```{r eval=FALSE}
-mod_list_OU_2 = list() # Empty list to save results
+mod_list_OU = list() # Empty list to save results
 
 # Now iterate through each formula in the form_list...
 for (n in 1:length(form_list)){
   # ... paste in the name of the response variable...
   formula_n = formula(paste(resp_var, form_list[n])) 
   #...fit the model, and save it in the mod_list...
-  mod_list_OU_2[[n]] = tryCatch.W.E({gls(formula_n, data = cladosbc_long, 
+  mod_list_OU[[n]] = tryCatch.W.E({gls(formula_n, data = cladosbc_long, 
                       correlation = corMartins(1, phy = tree_spp, 
                                             form = ~ Species|trait), 
                       method = 'ML',
                       na.action = na.omit)})
   #...and print out which iteration was just completed
-  print(paste(resp_var, 'model number', n, 'fit'))
+  print(paste('model number: ', n, ' - fit - ', deparse(formula_n[[3]])))
 }
-names(mod_list_OU_2) = form_list
+names(mod_list_OU) = form_list
 
-mod_list_OU_2 = sapply(mod_list_OU_2, \(x){x$value})
-mod_list_OU_2 = mod_list_OU_2[sapply(mod_list_OU_2, \(x) {!('error' %in% class(x))})]
+mod_list_OU = sapply(mod_list_OU, \(x){x$value})
+mod_list_OU = mod_list_OU[sapply(mod_list_OU, \(x) {!('error' %in% class(x))})]
 ```
 
 Check the fitted models (assembled into a list)
 
 ```{r}
 # Now the fitted models (already assembled into a list) can be compared with AICc
-aictab(mod_list_OU)   #  ~ trait/elevationScaled*Clado        # again mod9!!
-aictab(mod_list_OU_2) # 
+aictab(mod_list_OU)   #  ~ trait/Habitat, but note OU models are worse than lambda models
 ```
-
-**Simon left off here: None of the results/conclusions presented or discussed below has been reviewed or revised since the introduction of the alternative models**
 
 ### Results of morphology PGLS
 
@@ -493,7 +484,7 @@ $$
 
 ```{r}
 pgls_lambda <- mod_list_lambda$`~trait/elevationScaled * sex`
-pgls_OU <- mod_list_OU[[9]]
+pgls_OU <- mod_list_OU[[4]]
 
 # add model prediction
 cladosbc_long$p_pgls_lambda = predict(pgls_lambda, cladosbc_long)
@@ -505,7 +496,6 @@ pseudo_r2_lambda
 
 pseudo_r2_OU <- cor(cladosbc_long$value, cladosbc_long$p_pgls_OU)^2; 
 pseudo_r2_OU
-
 ```
 
 We can plot both models
@@ -519,6 +509,9 @@ rng = range(cladosbc$elevationScaled)
 ```
 
 Lambda
+
+**Simon left off working here (am still diagnosing strange values for female tail slope trend):**
+
 ```{r}
 # Generate predictions with emmeans (the Estimated Marginal Means!!)
 lambda_emm = emmeans(pgls_lambda, ~ trait:elevationScaled:sex, 
