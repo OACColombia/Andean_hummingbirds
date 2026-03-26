@@ -255,6 +255,7 @@ saveRDS(cladosbc, 'data_raw/cladosbc.rda')
 ### How this imputation looks like?
 
 Body mass for the different species pre-imputation:
+
 ```{r eval = FALSE}
 body_mass_pre <-cladosbc |>
   ggplot(aes(x = elevation, y = bodymass, color = Species))+
@@ -264,6 +265,7 @@ body_mass_pre <-cladosbc |>
   theme_classic() +
   theme(legend.position = "none", 
         strip.text = element_text(face = "italic"))
+
 ggsave(filename = "figures/bm_pre_impute.jpg", body_mass_pre, dpi = 300,
        width = 230, height = 200, units = "mm")
 ```
@@ -384,12 +386,12 @@ resp_var = 'value'  # define response variable
 form_list = list(
   ~ trait/1,                             #mod1 - "null"
   ~ trait/elevationScaled,               #mod2 - Elevation (num)
-  ~ trait/sex,                           #mod4 - Sex (female vs male)
-  ~ trait/Habitat,                       #mod5 - Habitat (grassland vs shrubland vs forest)
-  ~ trait/elevationScaled + sex,         #mod7
-  ~ trait/elevationScaled + Habitat,     #mod8
-  ~ trait/elevationScaled*sex,           #mod10
-  ~ trait/elevationScaled*Habitat        #mod11
+  ~ trait/sex,                           #mod3 - Sex (female vs male)
+  ~ trait/Habitat,                       #mod4 - Habitat (grassland vs shrubland vs forest)
+  ~ trait/elevationScaled + sex,         #mod5
+  ~ trait/elevationScaled + Habitat,     #mod6
+  ~ trait/elevationScaled*sex,           #mod7
+  ~ trait/elevationScaled*Habitat        #mod8
 )
 ```
 
@@ -423,7 +425,7 @@ Check the fitted models (assembled into a list). Note the better fit of all mode
 
 ```{r}
 # Now the fitted models (already assembled into a list) can be compared with AICc
-aictab(mod_list_lambda) #  ~ trait/elevationScaled*sex        #mod9
+aictab(mod_list_lambda) #  ~ trait/elevationScaled*sex        #mod7
 ```
 
 ### Ornstein-Uhlenbeck (OU)
@@ -454,8 +456,9 @@ for (n in 1:length(form_list)){
   formula_n = formula(paste(resp_var, form_list[n])) 
   #...fit the model, and save it in the mod_list...
   mod_list_OU[[n]] = tryCatch.W.E({gls(formula_n, data = cladosbc_long, 
-                      correlation = corMartins(1, phy = tree_spp, 
-                                            form = ~ Species|trait), 
+                      correlation = corMartins(value = 1,
+                                               phy = tree_spp, 
+                                               form = ~ Species|trait), 
                       method = 'ML',
                       na.action = na.omit)})
   #...and print out which iteration was just completed
@@ -467,25 +470,101 @@ mod_list_OU = sapply(mod_list_OU, \(x){x$value})
 mod_list_OU = mod_list_OU[sapply(mod_list_OU, \(x) {!('error' %in% class(x))})]
 ```
 
-Check the fitted models (assembled into a list)
+Check the fitted models (assembled into a list). Note that none of the OU models with sex converged and OU models are worse (higher AIC) than lambda models.
 
 ```{r}
 # Now the fitted models (already assembled into a list) can be compared with AICc
-aictab(mod_list_OU)   #  ~ trait/Habitat, but note OU models are worse than lambda models
+aictab(mod_list_OU)   #  ~ trait/Habitat
+```
+
+Having identified the best fitting model when fit with ML, we then need to refit the model with REML before proceeding:
+
+```{r}
+pgls_lambda <- gls(value ~ trait/elevationScaled * sex,
+                   data = cladosbc_long, 
+                   correlation = corPagel(1, phy = tree_spp, 
+                                          form = ~ Species|trait), 
+                   method = 'REML',
+                   na.action = na.omit)
+
+pgls_OU <- gls(value ~ trait/Habitat, data = cladosbc_long, 
+               correlation = corMartins(value = 1,
+                                        phy = tree_spp, 
+                                        form = ~ Species|trait), 
+                method = 'REML',
+                na.action = na.omit)
+```
+
+### Residual Diagnostics
+
+Need to check visually how well the model fits the data and whether the modelling assumptions are reasonable.
+
+```{r}
+cladosbc_long$resid = resid(pgls_lambda, type = 'normalized')
+cladosbc_long$fit = fitted(pgls_lambda)
+```
+
+There is clear evidence of heteroscedasticity:
+
+```{r}
+resid_auxpanel(cladosbc_long$res, cladosbc_long$fit)
+```
+
+Many groups do not appear to have mean zero residuals, which is also deeply problematic:
+
+```{r}
+boxplot(resid ~ sex*trait, data = cladosbc_long); abline(h = 0)
+```
+
+Let's try refitting the model modified to account for heteroscedasticity:
+
+```{r}
+vargrps = with(cladosbc_long, interaction(trait, sex))
+pgls_lambda <- gls(value ~ trait/elevationScaled * sex,
+                   data = cladosbc_long, 
+                   correlation = corPagel(1, phy = tree_spp, 
+                                          form = ~ Species|trait), 
+                   weights = varIdent(form = ~ 1|vargrps),
+                   method = 'REML',
+                   na.action = na.omit)
+
+pgls_OU <- gls(value ~ trait/Habitat, data = cladosbc_long, 
+               correlation = corMartins(value = 1,
+                                        phy = tree_spp, 
+                                        form = ~ Species|trait), 
+                weights = varIdent(form = ~ 1|vargrps),
+                method = 'REML',
+                na.action = na.omit)
+```
+
+...And recheck residual diagnostics:
+
+```{r}
+cladosbc_long$resid = resid(pgls_lambda, type = 'normalized')
+cladosbc_long$fit = fitted(pgls_lambda)
+```
+
+Heteroscedasticity does not appear completely solved, but it is improved
+
+```{r}
+resid_auxpanel(cladosbc_long$res, cladosbc_long$fit)
+```
+
+This is much better
+
+```{r}
+boxplot(resid ~ sex*trait, data = cladosbc_long); abline(h = 0)
 ```
 
 ### Results of morphology PGLS
 
-Lambda ($\hat{\lambda} = 0.089$; Close to 0, NO Brownian - random walk - phylogenetic signal), while OU ($\hat{\alpha}=1.618$; Strong stabilizing selection towards an optimum trait value). In both evolutionary models, they selected the model 9.
+Lambda ($\hat{\lambda} = 0.348$ - what does this imply? OU ($\hat{\alpha}= ?$) had worse fit - does it still make sense to consider the implications of the estimated correlation? 
 
 $$
 Value_{Trait} \sim \frac{Trait}{Elevation*Clade}
 $$
 
 ```{r}
-pgls_lambda <- mod_list_lambda$`~trait/elevationScaled * sex`
-pgls_OU <- mod_list_OU[[4]]
-
 # add model prediction
 cladosbc_long$p_pgls_lambda = predict(pgls_lambda, cladosbc_long)
 cladosbc_long$p_pgls_OU = predict(pgls_OU, cladosbc_long)
@@ -510,7 +589,7 @@ rng = range(cladosbc$elevationScaled)
 
 Lambda
 
-**Simon left off working here (am still diagnosing strange values for female tail slope trend):**
+This is now resolved:
 
 ```{r}
 # Generate predictions with emmeans (the Estimated Marginal Means!!)
@@ -559,10 +638,11 @@ lambda_emm |>
         axis.text.x = element_text(angle = 45, hjust = 1)) 
 ```
 
-OU
-```{r}
+OU - this no longer works because elevation is no longer in the best fitting model
+
+```{r, eval=FALSE}
 # Generate predictions with emmeans (the Estimated Marginal Means!!)
-OU_emm = emmeans(pgls_OU, ~ trait:elevationScaled:Clado, 
+OU_emm = emmeans(pgls_OU, ~ trait:elevationScaled:Habitat, 
                  at = list(elevationScaled = seq(rng[1], rng[2], .1)), 
                  mode = 'df.error') |> 
   as.data.frame() |> 
