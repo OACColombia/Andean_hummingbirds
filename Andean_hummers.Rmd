@@ -568,7 +568,7 @@ boxplot(resid ~ sex*trait, data = cladosbc_long); abline(h = 0)
 Lambda ($\hat{\lambda} = 0.348$ - what does this imply? OU ($\hat{\alpha}= 0.106$) had worse fit - does it still make sense to consider the implications of the estimated correlation? 
 
 $$
-Value_{Trait} \sim \frac{Trait}{Elevation*Clade}
+Value_{Trait} \sim \frac{Trait}{Elevation*Sex}
 $$
 
 ```{r}
@@ -678,7 +678,11 @@ acousticsbc = read_csv('data_raw/acoustics.csv') |>
          peakFreq = `peak Frequency`,
          miniFreq = `minimum Frequency`,
          maxiFreq = `maximum Frequency`,
-         noteDura = `note duration`) 
+         noteDura = `note duration`) |>
+  mutate(maxiFreq = maxiFreq/1000,
+         peakFreq = peakFreq/1000,
+         miniFreq = miniFreq/1000, 
+         noteDura = noteDura*1000)
 
 # there were some problems with string of the species names ()
 clean_species <- function(x) {
@@ -712,7 +716,7 @@ acousticsbc <- acousticsbc |>
 
 ## Sampling body mass and beak lenght in a Bayesian framework
 
-We cannot measure the audio specimens, but we can use the values from the morphology part to sampling from those measurement. Again, we assume that the data missing is at random because the probability to record an individual does not depend on its beak length or body mass measurements $T_i$ ([Kery & Royle, 2016](https://www-mbr--pwrc-usgs-gov.translate.goog/pubanalysis/keryroylebook/?_x_tr_sl=en&_x_tr_tl=es&_x_tr_hl=es&_x_tr_pto=tc)). Therefore, we model as latent variable the beak length and body mass measurements in JAGS, using as predictors the species and elevation reported.
+We cannot measure the audio specimens, but we can use the values from the morphology part to sampling from those measurement. Again, we assume that the data missing is at random because the probability to record an individual does not depend on its beak length or body mass measurements $T_i$ ([Kery & Royle, 2016](https://www-mbr--pwrc-usgs-gov.translate.goog/pubanalysis/keryroylebook/?_x_tr_sl=en&_x_tr_tl=es&_x_tr_hl=es&_x_tr_pto=tc)). Therefore, we model as latent variable the beak length and body mass measurements in JAGS, using as predictors the species, elevation and the peak frequency reported.
 
 $$
 \text{T}_{i} \sim \text{Normal}(\mu_{i},\sigma^{2}) \\
@@ -845,6 +849,9 @@ ggplot(beak_post, aes(x = Obs)) +
   theme(legend.position = "bottom") +
   guides(color = guide_legend(ncol = 2),
          fill = guide_legend(ncol = 2))
+
+ggsave(filename = "figures/Posterior_check_acoustic_beak.jpg",dpi = 300,
+       width = 200, height = 100, units = "mm")
 ```
 
 ```{r}
@@ -873,6 +880,9 @@ ggplot(bodymass_post_a, aes(x = Obs)) +
   theme(legend.position = "bottom") +
   guides(color = guide_legend(ncol = 2),
          fill = guide_legend(ncol = 2))
+
+ggsave(filename = "figures/Posterior_check_acoustic_bmass.jpg",dpi = 300,
+       width = 200, height = 100, units = "mm")
 ```
 
 
@@ -890,17 +900,17 @@ acoust_bc <- data_all |>
 saveRDS(acoust_bc, 'data_raw/acoust_bc.rda')
 ```
 
-## Phylogenetic signal - acoustic traits
+## Phylogenetic signal - acoustic traits - jump here
 
 Load the phylogenetic tree
 
-```{r eval = FALSE}
+```{r eval = TRUE}
 acoust_bc <- readRDS('data_raw/acoust_bc.rda')
 tree <- read.nexus("data_raw/summary_dated_clements.nex")
 ```
 
 Adjust name as in the phylogeny, and reorder the data
-```{r eval = FALSE}
+```{r eval = TRUE}
 acoust_bc$Spp_phylo <- gsub(" ", "_", acoust_bc$Species)
 
 acoust_bc <- acoust_bc |>
@@ -909,7 +919,7 @@ acoust_bc <- acoust_bc |>
 ```
 
 Select the species and prune the the tree
-```{r eval = FALSE}
+```{r eval = TRUE}
 species_a <- unique(acoust_bc$Spp_phylo)
 
 tree_spp_a <- drop.tip(tree, setdiff(tree$tip.label, species_a))
@@ -957,13 +967,6 @@ b
 
 ## Phylogenetic Generalized Least-Squares (PGLS) in Acoustics
 
-Import previously formatted data:
-
-```{r}
-acoust_bc = readRDS('data_raw/acoust_bc.rda')
-phylo_tree_cor_a = readRDS('data_raw/phylo_tree_cor_a.rda')
-```
-
 Lets try the longer format suggested by Simon, adjusting the correlation for phylogenetic relationship
 
 ```{r eval = TRUE}
@@ -984,13 +987,18 @@ resp_var_a = 'value'  # define response variable
 
 # Create a list containing one-sided formulas for all the candidate models
 form_list_a = list(
-  ~ trait/1,                             #mod1 - "null"
-  ~ trait/elevationScaled,               #mod2 - Elevation (num)
-  ~ trait/bm_scl,                        #mod3 - Body mass (num)
-  ~ trait/beak_scl,                      #mod4 - Beak length (num)
-  ~ trait/Habitat,                       #mod5 - Habitat (grassland vs shrubland vs forest)
-  ~ trait/elevationScaled + Habitat,     #mod6
-  ~ trait/elevationScaled*Habitat        #mod7
+  ~ trait/1,                             #mod01 - "null"
+  ~ trait/elevationScaled,               #mod02 - Elevation (num)
+  ~ trait/bm_scl,                        #mod03 - Body mass (num)
+  ~ trait/beak_scl,                      #mod04 - Beak length (num)
+  ~ trait/Habitat,                       #mod05 - Habitat (grassland vs shrubland vs forest)
+  ~ trait/elevationScaled + Habitat,     #mod06
+  ~ trait/elevationScaled*Habitat,       #mod07
+  ~ trait/bm_scl + Habitat,              #mod08
+  ~ trait/bm_scl*Habitat,                #mod09
+  ~ trait/beak_scl + Habitat,            #mod10
+  ~ trait/beak_scl*Habitat               #mod11
+
 )
 ```
 
@@ -1026,7 +1034,7 @@ Check the fitted models (assembled into a list). Note the better fit of all mode
 ```{r}
 mod_list_a_lambda <- readRDS("data_raw/mod_list_a_lambda.RDS")
 # Now the fitted models (already assembled into a list) can be compared with AICc
-aictab(mod_list_a_lambda) #  ~ trait/elevationScaled*Habitat        #mod7
+aictab(mod_list_a_lambda) #  ~ trait/bm_scl + Habitat  and ~ trait/bm_scl #mod3 &* mod8
 ```
 
 ### Ornstein-Uhlenbeck (OU)
@@ -1085,7 +1093,7 @@ aictab(mod_list_a_OU)   #  UPS! Error on functions that do not support mixture o
 Having identified the best fitting model when fit with ML, we then need to refit the model with REML before proceeding:
 
 ```{r}
-pgls_lambda_a <- gls(value ~ trait/elevationScaled * Habitat,
+pgls_lambda_a <- gls(value ~ trait/bm_scl + Habitat,
                    data = acoust_bc_long, 
                    correlation = corPagel(1, phy = tree_spp_a, 
                                           form = ~ Species|trait), 
@@ -1115,23 +1123,25 @@ There is clear evidence of heteroscedasticity:
 resid_auxpanel(acoust_bc_long$resid, acoust_bc_long$fit)
 ```
 
-Many groups do not appear to have mean zero residuals, which is also deeply problematic:
+This looks horrible :'(
 
 ```{r}
 boxplot(resid ~ Habitat*trait, data = acoust_bc_long); abline(h = 0)
 ```
 
-Let's try refitting the model modified to account for heteroscedasticity:
+Let's try refitting the model modified to account for heteroscedasticity (no groups here?):
 
-```{r}
+```{r eval - FALSE}
 vargrps_a = with(acoust_bc_long, interaction(trait, Habitat))
-pgls_lambda_a <- gls(value ~ trait/elevationScaled * Habitat,
+pgls_lambda_a <- gls(value ~ trait/bm_scl + Habitat,
                    data = acoust_bc_long, 
                    correlation = corPagel(1, phy = tree_spp_a, 
                                           form = ~ Species|trait), 
                    weights = varIdent(form = ~ 1|vargrps_a),
                    method = 'REML',
                    na.action = na.omit)
+
+saveRDS(pgls_lambda_a, "data_raw/pgls_lambda_a_REML.rds")
 
 # pgls_OU <- gls(value ~ trait/Habitat, data = cladosbc_long, 
 #                correlation = corMartins(value = 1,
@@ -1145,67 +1155,70 @@ pgls_lambda_a <- gls(value ~ trait/elevationScaled * Habitat,
 ...And recheck residual diagnostics:
 
 ```{r}
-cladosbc_long$resid = resid(pgls_lambda, type = 'normalized')
-cladosbc_long$fit = fitted(pgls_lambda)
+acoust_bc_long$resid = resid(pgls_lambda_a, type = 'normalized')
+acoust_bc_long$fit = fitted(pgls_lambda_a)
 ```
 
 Heteroscedasticity does not appear completely solved, but it is improved
 
 ```{r}
-resid_auxpanel(cladosbc_long$resid, cladosbc_long$fit)
+resid_auxpanel(acoust_bc_long$resid, acoust_bc_long$fit)
 ```
 
-This is much better
+This is much better (?)
 
 ```{r}
-boxplot(resid ~ sex*trait, data = cladosbc_long); abline(h = 0)
+boxplot(resid ~ Habitat+trait, data = acoust_bc_long); abline(h = 0)
 ```
 
-### Results of morphology PGLS
+### Results of acoustic PGLS
 
-Lambda ($\hat{\lambda} = 0.348$ - what does this imply? OU ($\hat{\alpha}= 0.106$) had worse fit - does it still make sense to consider the implications of the estimated correlation? 
+Lambda ($\hat{\lambda} = -0.041$ - what does this imply? OU ($\hat{\alpha}= ?$) does not fit - does it still make sense to consider the implications of the estimated correlation? 
 
 $$
-Value_{Trait} \sim \frac{Trait}{Elevation*Clade}
+Value_{Acoustic~Trait} \sim \frac{Acoustic~Trait}{Body~mass + Habitat}
 $$
 
 ```{r}
 # add model prediction
-cladosbc_long$p_pgls_lambda = predict(pgls_lambda, cladosbc_long)
-cladosbc_long$p_pgls_OU = predict(pgls_OU, cladosbc_long)
+acoust_bc_long$p_pgls_lambda = predict(pgls_lambda_a, acoust_bc_long)
+#acoust_bc_long$p_pgls_OU = predict(pgls_OU, acoust_bc_long)
 
 # calculating pseudo R² 
-pseudo_r2_lambda <- cor(cladosbc_long$value, cladosbc_long$p_pgls_lambda)^2; 
-pseudo_r2_lambda
+pseudo_r2_lambda_a <- cor(acoust_bc_long$value, acoust_bc_long$p_pgls_lambda)^2; 
+pseudo_r2_lambda_a
 
-pseudo_r2_OU <- cor(cladosbc_long$value, cladosbc_long$p_pgls_OU)^2; 
-pseudo_r2_OU
+#pseudo_r2_OU <- cor(cladosbc_long$value, cladosbc_long$p_pgls_OU)^2; 
+#pseudo_r2_OU
 ```
 
 We can plot both models
 
 ```{r eval = FALSE}
 # need scaling and centering factors
-cnt = attr(scale(cladosbc$elevation), 'scaled:center')
-scl = attr(scale(cladosbc$elevation), 'scaled:scale')
+cnt_a = attr(scale(acoust_bc$bodymass_a_imputed), 'scaled:center')
+scl_a = attr(scale(acoust_bc$bodymass_a_imputed), 'scaled:scale')
 # And the range of the scaled values
-rng = range(cladosbc$elevationScaled)
+acoust_bc <-  acoust_bc |> 
+  mutate(bm_scl = scale(bodymass_a_imputed))
+
+rng_a = range(acoust_bc$bm_scl)
 ```
 
 Lambda
 
-This is now resolved:
+Estimated Marginal Means
 
 ```{r}
 # Generate predictions with emmeans (the Estimated Marginal Means!!)
-lambda_emm = emmeans(pgls_lambda, ~ trait:elevationScaled:sex, 
-                 at = list(elevationScaled = seq(rng[1], rng[2], .1)), 
+lambda_emm_a = emmeans(pgls_lambda_a, ~ trait:bm_scl:Habitat, 
+                 at = list(bm_scl = seq(rng_a[1], rng_a[2], .1)), 
                  mode = 'df.error') |> 
   as.data.frame() |> 
-  mutate(elevation = scl*elevationScaled + cnt)
+  mutate(b_mass = scl_a*bm_scl + cnt_a)
 
-lambda_emm |>
-  group_by(trait, sex) |>
+lambda_emm_a |>
+  group_by(trait, Habitat) |>
   summarise(L.lower.CL = min(lower.CL),
             emmeanMin = min(emmean),
             U.lower.CL = max(lower.CL),
@@ -1215,32 +1228,36 @@ lambda_emm |>
 
 
 # Plot results
-lambda_emm |> 
-  mutate(trait = case_when(trait == "beak" ~ "Beak length (mm)",
-                           trait == "bm_imp" ~ "Body mass (gr x 10)",
-                           trait == "tail_imputed" ~ "Tail length (mm)",
-                           trait == "wing" ~ "Wing length (mm)")) |>
-  ggplot(aes(x = elevation, color = sex, fill = sex))+
-  facet_wrap(~ trait, nrow = 1, scales = 'free') +
+lambda_emm_a |> 
+  mutate(trait = case_when(trait == "maxiFreq" ~ "Maximum frequency (kHz)",
+                           trait == "miniFreq" ~ "Minimum frequency (kHz)",
+                           trait == "noteDura" ~ "Note duration (ms)",
+                           trait == "peakFreq" ~ "Peak frequency (kHz)")) |>
+  ggplot(aes(x = b_mass, fill = Habitat, color = Habitat))+
+  facet_wrap(~ factor(trait, 
+                        levels = c("Note duration (ms)",
+                                   "Minimum frequency (kHz)",
+                                   "Peak frequency (kHz)",
+                                   "Maximum frequency (kHz)")), 
+             nrow = 1, scales = 'free') +
   geom_ribbon(aes(ymin = lower.CL, ymax = upper.CL), color = NA, alpha = .2) +
   geom_line(aes(y = emmean))+
-  geom_point(data = cladosbc_long |> 
-               mutate(trait = case_when(trait == "beak" ~ "Beak length (mm)",
-                                        trait == "bm_imp" ~ "Body mass (gr x 10)",
-                                        trait == "tail_imputed" ~ "Tail length (mm)",
-                                        trait == "wing" ~ "Wing length (mm)")), 
-             aes(y = value), 
+  geom_point(data = acoust_bc_long |> 
+               mutate(trait = case_when(trait == "maxiFreq" ~ "Maximum frequency (kHz)",
+                           trait == "miniFreq" ~ "Minimum frequency (kHz)",
+                           trait == "noteDura" ~ "Note duration (ms)",
+                           trait == "peakFreq" ~ "Peak frequency (kHz)")), 
+             aes(y = value, x = bodymass_a_imputed), 
              alpha = 0.25) +
-  scale_color_met_d("Renoir")+
-  scale_fill_met_d("Renoir")+
-  labs(x = "Elevation (m)",
-       y = "Value (mm or gr*10)",
-       color = "Sex",
-       fill = "Sex",
-       title = "PGLS - Lambda") +
+  scale_color_met_d("Monet")+
+  scale_fill_met_d("Monet")+
+  labs(x = "Body mass (gr)",
+       y = "Value",
+       color = "Habitat",
+       fill = "Habitat",
+       title = "PGLS - Lambda - acoustic") +
   theme_classic() +
-  theme(legend.position = "bottom", 
-        axis.text.x = element_text(angle = 45, hjust = 1)) 
+  theme(legend.position = "bottom") 
 ```
 
 OU - this no longer works because elevation is no longer in the best fitting model
