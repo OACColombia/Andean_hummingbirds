@@ -1,0 +1,353 @@
+ # Acoustic
+cladosbc = readRDS('data_raw/cladosbc.rda')
+
+acousticsbc = read_csv('data_raw/acoustics.csv') |>
+  dplyr::select(AudioCollection, ID_Audio_Specimen, ID_note, 
+                Specie, elevation, 
+                `peak Frequency`,`minimum Frequency`,
+                `maximum Frequency`, `note duration`) |>
+  # Heliomaster longirostris is a Mtn. Gem not Brilliant/Coquette
+  filter(!str_detect(Specie, "Heliomaster")) |>
+  # adjust taxonomy or typos
+  mutate(
+         Specie = ifelse(Specie == "Heliangelus amethysticollis",
+                          "Heliangelus clarisse",
+                    ifelse(Specie == "Aglaiocercus kingi",
+                          "Aglaiocercus kingii",
+                    ifelse(Specie == "Lesbia victorie",
+                           "Lesbia victoriae",
+                    ifelse(Specie == "Boissonneaua flavescens",
+                           "Boissonneaua flavescens",
+                           Specie)))),
+         across(.cols = c(1:4), factor)) |>
+  rename(Species = Specie,
+         peakFreq = `peak Frequency`,
+         miniFreq = `minimum Frequency`,
+         maxiFreq = `maximum Frequency`,
+         noteDura = `note duration`)
+clean_species <- function(x) {
+  x |>
+    str_replace_all("\\u00A0", " ") |>   # replace non-breaking spaces
+    str_replace_all("\\u200B", "") |>    # remove zero-width spaces
+    str_squish() |>                      # collapse weird spacing
+    trimws() |>                          # remove leading/trailing spaces
+    as.character()
+}
+
+acousticsbc$Species <- clean_species(acousticsbc$Species)
+cladosbc$Species <- clean_species(cladosbc$Species)
+
+acoust_spp <- sort(unique(acousticsbc$Species))
+morpho_spp <- sort(unique(cladosbc$Species))
+
+# Intersection, species in both 
+intersect(acoust_spp, morpho_spp) # 28 species!
+
+# bring Habitat from cladesbc and scale elevation
+acousticsbc <- acousticsbc |>
+  left_join(cladosbc |> 
+              filter(Species %in% acoust_spp) |>
+              droplevels() |>
+              dplyr::select(Clado, Species, Habitat)) |> 
+  unique() |>  
+  arrange(Clado, Species) |>
+  mutate(elevationScaled = scale(elevation))
+
+# add index for species
+cladosbc2 <- cladosbc |>
+  filter(Species %in% acoust_spp) |>
+  arrange(Clado, Species) |>
+  mutate(spp = as.numeric(factor(Species, levels = acoust_spp)))
+acousticsbc2 <- acousticsbc |>
+  arrange(Clado, Species)|>
+  mutate(spp = as.numeric(factor(Species, levels = acoust_spp)))
+
+# combine
+data_all <- bind_rows(cladosbc2, acousticsbc2) |>
+  arrange(Clado, Species)
+unique(data_all$Species)
+
+# data list
+dat.a <- list(
+  N = nrow(data_all),
+  beak = data_all$beak,              # contains NA for acousticsbc rows
+  bodymass = data_all$bodymass,      # contains NA for acousticsbc rows
+  elev = data_all$elevation,
+  spp = data_all$spp,
+  n_species = length(unique(data_all$spp))
+)
+
+Impute.model.a <- function(){
+  
+  # Likelihood
+  for (i in 1:N) {
+    
+    # Beak model
+    beak[i] ~ dnorm(mu_beak[i], tau_beak)
+    mu_beak[i] <- beta0_beak +
+                  beta1_beak * elev[i] +
+                  beta2_beak[spp[i]]
+    
+    # Body mass model
+    bodymass[i] ~ dnorm(mu_body[i], tau_body)
+    mu_body[i] <- beta0_body +
+                  beta1_body * elev[i] +
+                  beta2_body[spp[i]]
+    
+    # Posterior predictive checks
+    beak_rep[i] ~ dnorm(mu_beak[i], tau_beak)
+    bodymass_rep[i] ~ dnorm(mu_body[i], tau_body)
+  }
+
+# Priors for beak
+  beta0_beak ~ dnorm(0, 0.001)
+  beta1_beak ~ dnorm(0, 0.001)
+  for (k in 1:n_species) {
+    beta2_beak[k] ~ dnorm(0, tau_spp_beak)
+  }
+  tau_spp_beak ~ dgamma(0.001, 0.001)
+  tau_beak ~ dgamma(0.001, 0.001)
+  
+  # Priors for body mass
+  beta0_body ~ dnorm(0, 0.001)
+  beta1_body ~ dnorm(0, 0.001)
+  for (k in 1:n_species) {
+    beta2_body[k] ~ dnorm(0, tau_spp_body)
+  }
+  tau_spp_body ~ dgamma(0.001, 0.001)
+  tau_body ~ dgamma(0.001, 0.001)
+
+Fit the model
+
+```{r eval = FALSE}
+Impute.fit.a <- jags.fit(data = dat.a,
+                       params = c("beak","bodymass", 
+                                  'beak_rep', 'bodymass_rep'),
+                       model = Impute.model.a, 
+                       n.chains = 4, thin = 5, n.iter = 10000)
+saveRDS(Impute.fit.a, "data_raw/Impute_fit_a.RDS")
+
+Impute.fit.a <- readRDS("data_raw/Impute_fit_a.RDS")
+# Convert to matrix
+mcmc_mat_a <- as.matrix(Impute.fit.a)
+
+# Extract posterior means
+beak_a_means <- colMeans(mcmc_mat_a[, grep("^beak\\[", colnames(mcmc_mat_a))])
+bodymass_a_means <- colMeans(mcmc_mat_a[, grep("^bodymass\\[", colnames(mcmc_mat_a))])
+
+post.a <- apply(mcmc_mat_a, 2, quantile, c(0.5, 0.005, 0.10, 0.9, 0.995))
+beak_post = post.a[, grep("beak_rep", colnames(post.a))] |> 
+  t() |> 
+  as.data.frame() |> 
+  mutate(Obs = row_number(), .before = `50%`) 
+
+ggplot(beak_post, aes(x = Obs)) + 
+  geom_errorbar(aes(ymin = `0.5%`, ymax = `99.5%`, 
+                    color = "95%"), linewidth = 2)+
+  geom_errorbar(aes(ymin = `10%`, ymax = `90%`,
+                    color = "80%"), linewidth = 1) +
+  geom_point(aes(y = `50%`, fill = "Estimated"), shape = 24, alpha = 0.6)+
+  geom_point(data = mutate(data_all, Obs = row_number()), 
+             aes(y = beak, fill = "Observed"), shape = 21, alpha = 0.6)+
+  scale_fill_manual(values = c("blue","orange"),
+                    breaks = c("Estimated","Observed"))+
+  scale_color_manual(values = c('grey40','grey80'),
+                     breaks = c("80%","95%")) +
+  scale_x_continuous(expand = c(0,0), limits = c(-10,1100))+
+  scale_y_continuous(expand = c(0,0), limits = c(0,100))+
+  labs(x = "Samples", y = "Posterior (beak length)",
+       fill = "Measurement", color = "Uncertainty")+
+  theme_classic() +
+  theme(legend.position = "bottom") +
+  guides(color = guide_legend(ncol = 2),
+         fill = guide_legend(ncol = 2))
+
+bodymass_post_a = post.a[, grep("bodymass_rep", colnames(post.a))] |> 
+  t() |> 
+  as.data.frame() |> 
+  mutate(Obs = row_number(), .before = `50%`)
+
+ggplot(bodymass_post_a, aes(x = Obs)) + 
+  geom_errorbar(aes(ymin = `0.5%`, ymax = `99.5%`, 
+                    color = "95%"), linewidth = 2)+
+  geom_errorbar(aes(ymin = `10%`, ymax = `90%`,
+                    color = "80%"), linewidth = 1) +
+  geom_point(aes(y = `50%`, fill = "Estimated"), shape = 24, alpha = 0.6)+
+  geom_point(data = mutate(data_all, Obs = row_number()),
+             aes(y = bodymass_imputed, fill = "Observed"), shape = 21, alpha = 0.6)+
+  scale_fill_manual(values = c("blue","orange"),
+                    breaks = c("Estimated","Observed"))+
+  scale_color_manual(values = c('grey40','grey80'),
+                     breaks = c("80%","95%")) +
+  scale_x_continuous(expand = c(0,0), limits = c(-10,1100))+
+  scale_y_continuous(expand = c(0,0), limits = c(0,12))+
+  labs(x = "Samples", y = "Posterior (body mass)",
+       fill = "Measurement", color = "Uncertainty")+
+  theme_classic() +
+  theme(legend.position = "bottom") +
+  guides(color = guide_legend(ncol = 2),
+         fill = guide_legend(ncol = 2))
+
+# Add new columns with imputed values
+data_all$beak_imputed <- data_all$beak
+data_all$beak_imputed[is.na(data_all$beak)] <- beak_a_means[is.na(data_all$beak)]
+
+data_all$bodymass_a_imputed <- data_all$bodymass_imputed
+data_all$bodymass_a_imputed[is.na(data_all$bodymass_imputed)] <- bodymass_a_means[is.na(data_all$bodymass_imputed)]
+
+acoust_bc <- data_all |> 
+  drop_na(AudioCollection)
+
+# Phylogenetic signal - acoustic traits
+
+Load the phylogenetic tree
+
+acoust_bc <- readRDS('data_raw/acoust_bc.rda')
+tree <- read.nexus("data_raw/summary_dated_clements.nex")
+
+
+Adjust name as in the phylogeny, and reorder the data
+
+acoust_bc$Spp_phylo <- gsub(" ", "_", acoust_bc$Species)
+
+acoust_bc <- acoust_bc |>
+  relocate(c(Species, Spp_phylo), .before = Clado) |>
+  relocate(c(Species, Spp_phylo, Clado), .before = Numero.catalogo)
+
+Select the species and prune the the tree
+```{r eval = FALSE}
+species_a <- unique(acoust_bc$Spp_phylo)
+
+tree_spp_a <- drop.tip(tree, setdiff(tree$tip.label, species_a))
+tree_spp_a
+plot(tree_spp_a, cex = 0.6)
+
+tree_spp_a$tip.label = gsub(tree_spp_a$tip.label, 
+                                  pattern = "_", replacement = " ")
+```
+
+Here, we compute the correlation matrix using `ape`.
+```{r eval = TRUE}
+# Create correlation matrix for analysis
+phylo_tree_cor_a = ape::vcv(tree_spp_a, cor = T)
+saveRDS(phylo_tree_cor_a, 'data_raw/phylo_tree_cor_a.rda')
+
+Here, we compute the correlation matrix using `ape`.
+```{r eval = TRUE}
+# Create correlation matrix for analysis
+phylo_tree_cor_a = ape::vcv(tree_spp_a, cor = T)
+saveRDS(phylo_tree_cor_a, 'data_raw/phylo_tree_cor_a.rda')
+```
+
+Finally, we will plot the tree using blue for coquettes and orange for brilliants
+```{r plotting tree, eval = FALSE}
+met.brewer("Renoir", n = 2)
+taxa_palette = c('coquettes'=as.vector(met.brewer("Renoir", n = 2))[2], 
+                 'brilliants'= as.vector(met.brewer("Renoir", n = 2))[1])
+
+b = ggtree(tree_spp_a) %<+% acoust_bc + 
+  geom_tiplab(aes(color = Clado), #label = ott_species), 
+              align = TRUE, size = 4.3, offset = 0.0, fontface = 3) + 
+                # , align = TRUE, size = 3, offset = 0.1)
+  scale_color_manual(values = taxa_palette) +
+  theme_tree()+
+  theme(axis.text = element_text(size = 12),
+        legend.position = "none", #c(0.48,0.89)
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 14),
+        legend.background = element_blank(),
+        plot.margin =margin(0, 0, 0,-5, unit = "cm")) +
+  scale_y_continuous(expand=c(0, 1)) +
+  scale_x_continuous(expand=c(1, 0.5))
+
+# Phylogenetic Generalized Least-Squares (PGLS) in Acoustics
+acoust_bc = readRDS('data_raw/acoust_bc.rda')
+phylo_tree_cor_a = readRDS('data_raw/phylo_tree_cor_a.rda')
+
+acoust_bc_long = acoust_bc |> 
+  mutate(bm_scl = scale(bodymass_a_imputed),
+         beak_scl = scale(beak_imputed)) |>
+  pivot_longer(cols = c('noteDura', 'miniFreq', 'peakFreq', 'maxiFreq'), 
+               names_to = 'trait', values_to = 'value')
+
+acoust_bc_long$trait <- as.factor(acoust_bc_long$trait)
+
+
+Define the formula for the models
+
+resp_var_a = 'value'  # define response variable
+
+# Create a list containing one-sided formulas for all the candidate models
+form_list_a = list(
+  ~ trait/1,                             #mod1 - "null"
+  ~ trait/elevationScaled,               #mod2 - Elevation (num)
+  ~ trait/bm_scl,                        #mod3 - Body mass (num)
+  ~ trait/beak_scl,                      #mod4 - Beak length (num)
+  ~ trait/Habitat,                       #mod5 - Habitat (grassland vs shrubland vs forest)
+  ~ trait/elevationScaled + Habitat,     #mod6
+  ~ trait/elevationScaled*Habitat        #mod7
+
+# Pagel's lambda optimization 
+
+mod_list_a_lambda = list() # Empty list to save results
+
+# Now iterate through each formula in the form_list...
+for (n in 1:length(form_list_a)){
+  # ... paste in the name of the response variable...
+  formula_n = formula(paste(resp_var_a, form_list_a[n])) 
+  #...fit the model, and save it in the mod_list...
+  mod_list_a_lambda[[n]] = gls(formula_n, data = acoust_bc_long, 
+                      correlation = corPagel(1, phy = tree_spp_a, 
+                                            form = ~ Species|trait), 
+                      method = 'ML',
+                      na.action = na.omit)
+  #...and print out which iteration was just completed
+  print(paste('model number: ', n, ' - fit - ', deparse(formula_n[[3]])))
+}
+
+names(mod_list_a_lambda) = form_list_a
+saveRDS(mod_list_a_lambda, file = "data_raw/mod_list_a_lambda.RDS")
+
+mod_list_a_lambda <- readRDS("data_raw/mod_list_a_lambda.RDS")
+# Now the fitted models (already assembled into a list) can be compared with AICc
+aictab(mod_list_a_lambda) #  ~ trait/elevationScaled*Habitat        #mod7
+
+ Ornstein-Uhlenbeck (OU)
+
+Define function for checking/handling errors:
+tryCatch.W.E = function(expr){
+    W <- NULL
+    w.handler <- function(w) { # warning handler
+	W <<- w
+	invokeRestart("muffleWarning")
+    }
+    list(value = withCallingHandlers(tryCatch(expr, error = function(e) e),
+				     warning = w.handler),
+	 warning = W)
+
+mod_list_a_OU = list() # Empty list to save results
+
+# Now iterate through each formula in the form_list...
+for (n in 1:length(form_list_a)){
+  # ... paste in the name of the response variable...
+  formula_n = formula(paste(resp_var_a, form_list_a[n])) 
+  #...fit the model, and save it in the mod_list...
+  mod_list_a_OU[[n]] = tryCatch.W.E({gls(formula_n, data = acoust_bc_long, 
+                      correlation = corMartins(value = 1,
+                                               phy = tree_spp_a, 
+                                               form = ~ Species|trait), 
+                      method = 'ML',
+                      na.action = na.omit)})
+  #...and print out which iteration was just completed
+  print(paste('model number: ', n, ' - fit - ', deparse(formula_n[[3]])))
+}
+names(mod_list_a_OU) = form_list_a
+
+mod_list_a_OU = sapply(mod_list_a_OU, \(x){x$value})
+mod_list_a_OU = mod_list_a_OU[sapply(mod_list_a_OU, \(x) {!('error' %in% class(x))})]
+saveRDS(mod_list_a_OU, file = "data_raw/mod_list_a_OU.RDS")
+
+
+
+
+
